@@ -631,7 +631,7 @@ def convert_sentence_to_audio(params, session):
                 )
                 torchaudio.save(
                     params['sentence_audio_file'], 
-                    torch.tensor(output[audioproc_format]).unsqueeze(0), 
+                    torch.tensor(output['wav']).unsqueeze(0), 
                     sample_rate=24000
                 )
             else:
@@ -659,26 +659,36 @@ def convert_sentence_to_audio(params, session):
 def combine_audio_sentences(chapter_audio_file, start, end, session):
     try:
         chapter_audio_file = os.path.join(session['chapters_dir'], chapter_audio_file)
-        combined_audio = AudioSegment.empty()  
+        #combined_audio = AudioSegment.empty()  #no longer needed with ffmpeg function below
         # Get all audio sentence files sorted by their numeric indices
-        sentence_files = [f for f in os.listdir(session['chapters_dir_sentences']) if f.endswith(".wav")]
+        sentence_files = [f for f in os.listdir(session['chapters_dir_sentences']) if f.endswith(".flac")]
         sentences_dir_ordered = sorted(sentence_files, key=lambda x: int(re.search(r'\d+', x).group()))
         # Filter the files in the range [start, end]
         selected_files = [
             file for file in sentences_dir_ordered 
             if start <= int(''.join(filter(str.isdigit, os.path.basename(file)))) <= end
         ]
-        for file in selected_files:
-            if session['cancellation_requested']:
-                #stop_and_detach_tts(params['tts'])
-                print('Cancel requested')
-                return False
-            if session['cancellation_requested']:
-                msg = 'Cancel requested'
-                raise ValueError(msg)
-            audio_segment = AudioSegment.from_file(os.path.join(session['chapters_dir_sentences'],file), format=audioproc_format)
-            combined_audio += audio_segment
-        combined_audio.export(chapter_audio_file, format=audioproc_format)
+
+        # Create a temporary text file with the list of files to concatenate
+        temp_list_file = "temp_list.txt"
+        with open(temp_list_file, "w") as f:
+            for sentencefile in sorted(selected_files,key=lambda x: int(re.search(r'\d+', x).group())):
+                f.write(f"file '{os.path.join(session['chapters_dir_sentences'], sentencefile)}'\n")
+
+        # Use ffmpeg to concatenate the files
+        ffmpeg_command = [
+            "ffmpeg",
+            "-f", "concat",
+            "-safe", "0",
+            "-i", temp_list_file,
+            "-c:a", "flac",
+            chapter_audio_file
+            ]
+        subprocess.run(ffmpeg_command)
+
+        # Delete the temporary list file
+        os.remove(temp_list_file)
+
         print(f'Combined audio saved to {chapter_audio_file}')
         return True
     except Exception as e:
@@ -692,21 +702,33 @@ def combine_audio_chapters(session):
         
     def assemble_audio():
         try:
-            combined_audio = AudioSegment.empty()
-            batch_size = 256
-            # Process the chapter files in batches
-            for i in range(0, len(chapter_files), batch_size):
-                batch_files = chapter_files[i:i + batch_size]
-                batch_audio = AudioSegment.empty()  # Initialize an empty AudioSegment for the batch
-                # Sequentially append each file in the current batch to the batch_audio
-                for chapter_file in batch_files:
-                    if session['cancellation_requested']:
-                        print('Cancel requested')
-                        return False
-                    audio_segment = AudioSegment.from_wav(os.path.join(session['chapters_dir'],chapter_file))
-                    batch_audio += audio_segment
-                combined_audio += batch_audio
-            combined_audio.export(assembled_audio, format=audioproc_format)
+            # Get a list of files in the directory
+            chapterfiles = [f for f in os.listdir(session['chapters_dir']) if f.endswith('.flac')]
+
+            if not chapterfiles:
+                print("No files found in the directory.")
+                return
+
+            # Create a temporary text file with the list of files to concatenate
+            temp_list_file = "temp_list.txt"
+            with open(temp_list_file, "w") as f:
+                for chapterfile in sorted(chapterfiles,key=lambda x: int(re.search(r'\d+', x).group())):
+                    f.write(f"file '{os.path.join(session['chapters_dir'], chapterfile)}'\n")
+
+            # Use ffmpeg to concatenate the files
+            ffmpeg_command = [
+                "ffmpeg",
+                "-f", "concat",
+                "-safe", "0",
+                "-i", temp_list_file,
+                "-c:a", "flac",
+                assembled_audio
+            ]
+            subprocess.run(ffmpeg_command)
+
+            # Delete the temporary list file
+            os.remove(temp_list_file)
+            
             print(f'Combined audio saved to {assembled_audio}')
             return True
         except Exception as e:
@@ -753,7 +775,7 @@ def combine_audio_chapters(session):
                     msg = 'Cancel requested'
                     raise ValueError(msg)
 
-                duration_ms = len(AudioSegment.from_wav(os.path.join(session['chapters_dir'],chapter_file)))
+                duration_ms = len(AudioSegment.from_file(os.path.join(session['chapters_dir'],chapter_file)))
                 ffmpeg_metadata += f'[CHAPTER]\nTIMEBASE=1/1000\nSTART={start_time}\n'
                 ffmpeg_metadata += f'END={start_time + duration_ms}\ntitle=Chapter {index + 1}\n'
                 start_time += duration_ms
@@ -830,7 +852,7 @@ def combine_audio_chapters(session):
             raise DependencyError(e)
 
     try:
-        chapter_files = [f for f in os.listdir(session['chapters_dir']) if f.endswith(".wav")]
+        chapter_files = [f for f in os.listdir(session['chapters_dir']) if f.endswith(".flac")]
         chapter_files = sorted(chapter_files, key=lambda x: int(re.search(r'\d+', x).group()))
         assembled_audio = os.path.join(session['tmp_dir'], session['metadata']['title'] + '.' + audioproc_format)
         metadata_file = os.path.join(session['tmp_dir'], 'metadata.txt')
